@@ -1,0 +1,1 @@
+In this repository we provide the first and second iterations of the software related to the different deliverable versions of the AILA project. A more detailed documentation will be provided in future work of the deliverables
