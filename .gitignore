@@ -50,4 +50,4 @@ Website_dev/backend/cached_reranker_models/BAAI__bge-reranker-base/special_token
 Website_dev/backend/cached_reranker_models/BAAI__bge-reranker-base/tokenizer.json
 Website_dev/backend/cached_reranker_models/BAAI__bge-reranker-base/tokenizer_config.json
 Website_dev/frontend/.env.production
-Website_dev/nginx/default.conf
+
