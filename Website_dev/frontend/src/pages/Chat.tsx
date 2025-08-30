@@ -1,14 +1,83 @@
+/**
+* @packageDocumentation
+*
+* @remarks
+* The main chat UI for **AILA**. Provides:
+* - Conversation list (create, select, inline rename)
+* - Streaming chat with backend (`/request` endpoint)
+* - Persistence via {@link AuthContextType}
+* - Per‑message feedback (👍/👎)
+* - Responsive sidebar (mobile overlay)
+*
+* **Data Flow**
+* 1. On mount → fetch user’s conversations.
+* 2. Auto‑select first conversation & fetch messages.
+* 3. Local `messages` mirror context `userMessages` for real‑time patching.
+* 4. On submit:
+* - Append user + placeholder assistant messages.
+* - Stream tokens and patch assistant message.
+* - Persist messages and refresh conversation.
+*
+* Accessibility
+* -------------
+* - Uses semantic buttons & aria-friendly state updates.
+*
+* Styling
+* -------
+* - TailwindCSS for layout & theming.
+* - lucide-react icons (User, Bot, Menu, X).
+* - Framer Motion for subtle entrance animation on greeting.
+* 
+* @example
+* ```tsx
+* import Chat from './pages/Chat';
+* <Route path="/chat" element={<Chat />} />
+* ```
+*/
+
 import { useEffect, useRef, useState } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext.jsx';
 import { v4 as uuidv4 } from 'uuid';
 import { useNavigate } from 'react-router-dom';
-import api from '../api/axios';
-import type { Message, Conversations } from '../models/Types';
-import { Menu, X, User, Bot } from 'lucide-react'; // install `lucide-react` or use your preferred icon library
-import { motion } from "framer-motion";
+import api from '../api/axios.jsx';
+import type { Message, Conversations } from '../models/Types.jsx';
+import { Menu, X, User, Bot } from 'lucide-react';
+import { motion } from 'framer-motion';
 
 
-const Chat = () => {
+
+/**
+ * Chat component — renders the main conversation interface.
+ *
+ * @remarks
+ * This component is the core chat UI for AILA. It manages conversation state,
+ * message streaming, feedback, and user interactions.
+ *
+ * ## Responsibilities
+ * - Display a sidebar of conversations (with create, select, and rename).
+ * - Render the chat viewport with user and assistant messages.
+ * - Stream assistant responses from the backend in real time.
+ * - Capture 👍 / 👎 feedback on assistant messages.
+ * - Manage authentication lifecycle actions (logout).
+ * - Provide mobile-friendly sidebar toggle and responsive layout.
+ *
+ * ## Props
+ * None. This component consumes global state from {@link useAuth}.
+ *
+ * ## Returns
+ * A React element representing the chat UI with sidebar + main conversation area.
+ *
+ * @example
+ * ```tsx
+ * import { Chat } from "./pages/Chat";
+ *
+ * <Route path="/chat" element={<Chat />} />
+ * ```
+ */
+export const Chat = () => {
+    // -------------------------
+    // Local state
+    // -------------------------
     const [messages, setMessages] = useState<Message[]>([]);
     const [userQuery, setUserQuery] = useState('');
     const [botResponse, setBotResponse] = useState('');
@@ -16,48 +85,95 @@ const Chat = () => {
         conversation_name: '',
         conversation_id: ''
     });
+
+    // Inline rename controls
     const [editingConvId, setEditingConvId] = useState('');
     const [editedTitle, setEditedTitle] = useState('');
-    // const [conversationTitle,setConversationTitle] = useState('');
+
+    // Mobile sidebar toggle
     const [sidebarOpen, setSidebarOpen] = useState(false);
-    const { user, userMessages, userFeedback, logoutUser, fetchUserMessages, conversations, createConversation, createMessage, fetchConversations, renameConversation } = useAuth();
+
+    // -------------------------
+    // Context + navigation
+    // -------------------------
+    const {
+        user,
+        userMessages,
+        userFeedback,
+        logoutUser,
+        fetchUserMessages,
+        conversations,
+        createConversation,
+        createMessage,
+        fetchConversations,
+        renameConversation,
+    } = useAuth();
+
     const navigate = useNavigate();
     const chatRef = useRef<HTMLDivElement | null>(null);
 
-
+    /**
+     * When user becomes available, fetch user conversations.
+     */
     useEffect(() => {
         if (user) fetchConversations(user.username);
     }, [user]);
 
+    /**
+     * Auto-scroll chat viewport on new messages.
+     */
     useEffect(() => {
         if (chatRef.current) {
             chatRef.current.scrollIntoView({ behavior: 'smooth' })
         }
     }, [userMessages])
 
+    /**
+     * When conversations load, auto-select the first one and fetch its messages.
+     */
     useEffect(() => {
         if (conversations?.length) {
             const initial = conversations[0];
-            setCurrentConversation(initial);
-            fetchUserMessages(initial.conversation_id);
+            if (initial) {
+                setCurrentConversation(initial);
+                fetchUserMessages(initial.conversation_id);
+            }
         }
     }, [conversations]);
 
+    /**
+     * Keep local `messages` mirrored with context's `userMessages`.
+     * (We still maintain local state to patch streaming chunks in real time.)
+     */
     useEffect(() => {
         setMessages(userMessages ?? []);
     }, [userMessages]);
 
+
+    // -------------------------
+    // Handlers
+    // -------------------------
+
+    /**
+     * Submit a new user query:
+     * - Appends an user message + a placeholder assistant message.
+     * - Streams response from backend and updates the last assistant message incrementally.
+     * - On stream completion, persists both messages via context calls and refreshes.
+     */
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         const userMessage = userQuery.trim();
         if (!userMessage) return;
 
         const now = new Date().toISOString();
+
+        // Prepare messages (user + empty assistant)
         const newMessages = [
             { message: userMessage, role: 'user', timestamp: now, id: uuidv4(), feedback: null },
             { message: '', role: 'assistant', timestamp: now, id: uuidv4(), feedback: null }
         ];
 
+        // Push to UI immediately
         setMessages(prev => [...prev, ...newMessages]);
         setUserQuery('');
         setBotResponse('');
@@ -85,22 +201,33 @@ const Chat = () => {
             const decoder = new TextDecoder('utf-8');
             let fullBotResponse = '';
 
+            // The bot responses in streaming manner, meaning that it gives chunks of the final message. 
+            // Below we try to print to the screen each of the chunks given by the bot in real time 
+
+            // Read SSE-ish chunks
             while (true) {
                 const { value, done } = await reader.read();
                 const chunk = decoder.decode(value);
+
+                // Each "event" is "data: {json}\n\n"
                 const lines = chunk.split('\n\n').filter(line => line.startsWith('data: '));
 
                 for (const line of lines) {
                     try {
                         const jsonStr = line.replace("data: ", "");
                         const parsed = JSON.parse(jsonStr);
+
+                        // Accumulate content
                         fullBotResponse += parsed.response;
 
+                        // Patch last assistant message on-screen
                         setMessages(prev => {
                             const updated = [...prev];
                             const lastIndex = updated.length - 1;
-                            updated[lastIndex].message = fullBotResponse;
-                            updated[lastIndex].timestamp = new Date().toISOString();
+                            if (updated[lastIndex]) {
+                                updated[lastIndex].message = fullBotResponse;
+                                updated[lastIndex].timestamp = new Date().toISOString();
+                            }
                             return updated;
                         });
                     } catch (err) {
@@ -109,9 +236,15 @@ const Chat = () => {
                 }
 
                 if (done) {
-                    await createMessage(currentConversation.conversation_id, userMessage, 'user', newMessages[0].id, newMessages[0].feedback);
-                    await createMessage(currentConversation.conversation_id, fullBotResponse, 'assistant', newMessages[1].id, newMessages[1].feedback);
-                    await fetchUserMessages(currentConversation.conversation_id);
+                    // Persist messages after stream completes
+                    if (currentConversation && currentConversation.conversation_id) {
+                        if (newMessages[0] && newMessages[1]) {
+                            await createMessage(currentConversation.conversation_id, userMessage, 'user', newMessages[0].id, newMessages[0].feedback);
+                            await createMessage(currentConversation.conversation_id, fullBotResponse, 'assistant', newMessages[1].id, newMessages[1].feedback);
+                        }
+                        // Refresh from backend (for canonical ordering/metadata)
+                        await fetchUserMessages(currentConversation.conversation_id);
+                    }
                     break;
                 }
             }
@@ -121,6 +254,9 @@ const Chat = () => {
         }
     };
 
+    /**
+     * Submit 👍/👎 feedback for an assistant message.
+     */
     const handleUserFeedback = async (message_index: string, conversation_id: string, feedback: boolean, e?: React.MouseEvent) => {
         e?.preventDefault();
         try {
@@ -135,20 +271,9 @@ const Chat = () => {
         }
     }
 
-
-    // const createNewConversation = async (name:string) => {
-    //     if (user) {
-    //         const conversation_name = name || `Conversation ${conversations?.length || 0}`;
-    //         const newConv = await createConversation(conversation_name, user?.username);
-    //         if (newConv) {
-    //             setCurrentConversation(newConv);
-    //             setMessages([]);
-    //         }
-    //         // setConversationTitle('');
-
-    //     }
-    // };
-
+    /**
+     * Rename a conversation (inline edit).
+     */
     const handleRename = async (conversationId: string) => {
         if (!editedTitle.trim()) {
             setEditingConvId('');
@@ -157,26 +282,29 @@ const Chat = () => {
         console.log(conversationId, editedTitle.trim());
         await renameConversation(conversationId, editedTitle.trim());
 
+        // Optimistically update local conversation list label
         if (conversations) {
-            for (let i = 0; i < (conversations?.length ?? 0); i++) {
-                if (conversations[i] !== null && conversations[i].conversation_id === conversationId) {
-                    conversations[i].conversation_name = editedTitle.trim();
+            for (let i = 0; i < conversations.length; i++) {
+                const conv = conversations[i];
+                if (
+                    conv &&
+                    conv.conversation_id &&
+                    conv.conversation_name &&
+                    conv.conversation_id === conversationId
+                ) {
+                    conv.conversation_name = editedTitle.trim();
                     break;
                 }
             }
         }
 
-
-        // const conversations = conversations?.map(conv =>
-        //     conv.conversation_id === conversationId ? {...conv, conversation_name:editedTitle.trim()} : conv
-        // );
-
-        // setCurrentConversation(updated);
-
         setEditingConvId('');
 
     }
 
+    /**
+    * Create a new conversation with a default name.
+    */
     const createNewConversation = async () => {
         if (user) {
             const conversation_name = `Conversation ${conversations?.length || 0}`;
@@ -189,16 +317,25 @@ const Chat = () => {
         }
     };
 
+    /**
+     * Select conversation and fetch messages for it.
+     */
     const getMessagesFromConversations = async (conversation_id: string, conversation_name: string) => {
         setCurrentConversation({ conversation_id: conversation_id, conversation_name: conversation_name });
         await fetchUserMessages(conversation_id);
     };
 
+    /**
+     * Logout and redirect to login.
+     */
     const logoutButton = async () => {
         await logoutUser();
         navigate('/login');
     };
 
+    // -------------------------
+    // Render
+    // -------------------------
     return (
         <div className="flex h-screen bg-gray-100 text-gray-800 relative">
             {/* Overlay for mobile sidebar */}
